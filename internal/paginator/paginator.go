@@ -1,6 +1,8 @@
 package paginator
 
 import (
+	"github.com/mattn/go-runewidth"
+
 	"github.com/goread/goread/internal/htmlconv"
 )
 
@@ -55,7 +57,6 @@ func (p *Paginator) reflow() {
 		wrapped := wrapLine(line, p.width)
 		p.wrappedLines = append(p.wrappedLines, wrapped...)
 	}
-	// Trim leading empty lines
 	for len(p.wrappedLines) > 0 && isEmptyWrappedLine(p.wrappedLines[0]) {
 		p.wrappedLines = p.wrappedLines[1:]
 	}
@@ -76,7 +77,6 @@ func wrapLine(line htmlconv.StyledLine, width int) []WrappedLine {
 	if width <= 0 {
 		return []WrappedLine{{Spans: line.Spans}}
 	}
-
 	if len(line.Spans) == 0 {
 		return []WrappedLine{{}}
 	}
@@ -86,99 +86,121 @@ func wrapLine(line htmlconv.StyledLine, width int) []WrappedLine {
 	col := 0
 
 	for _, span := range line.Spans {
-		text := span.Text
-		for len(text) > 0 {
-			remaining := width - col
-			if remaining <= 0 {
+		runes := []rune(span.Text)
+		pos := 0
+
+		for pos < len(runes) {
+			r := runes[pos]
+			rw := runewidth.RuneWidth(r)
+
+			if r == ' ' && col+rw > width {
 				result = append(result, WrappedLine{Spans: currentSpans})
 				currentSpans = nil
 				col = 0
-				remaining = width
+				pos++
+				continue
 			}
 
-			if runeLen(text) <= remaining {
-				currentSpans = append(currentSpans, htmlconv.StyledSpan{
-					Text:  text,
-					Style: span.Style,
-				})
-				col += runeLen(text)
-				text = ""
-			} else {
-				breakAt := findBreakPoint(text, remaining)
-				if breakAt <= 0 {
-					if col == 0 {
-						breakAt = remaining
-					} else {
+			if col+rw > width {
+				// Current line is full — try to break at last space
+				broke := breakCurrentLine(&result, &currentSpans, &col, width)
+				if !broke {
+					// No space found: force break at current position
+					if len(currentSpans) > 0 || col > 0 {
 						result = append(result, WrappedLine{Spans: currentSpans})
 						currentSpans = nil
 						col = 0
-						continue
 					}
 				}
-				chunk := substringRunes(text, 0, breakAt)
-				currentSpans = append(currentSpans, htmlconv.StyledSpan{
-					Text:  chunk,
-					Style: span.Style,
-				})
-				result = append(result, WrappedLine{Spans: currentSpans})
-				currentSpans = nil
-				col = 0
-				text = substringRunes(text, breakAt, runeLen(text))
-				text = trimLeadingSpace(text)
+				continue
 			}
+
+			// Append this rune to current span accumulation
+			currentSpans = appendRune(currentSpans, r, span.Style)
+			col += rw
+			pos++
 		}
 	}
 
 	if len(currentSpans) > 0 || len(result) == 0 {
 		result = append(result, WrappedLine{Spans: currentSpans})
 	}
-
 	return result
 }
 
-func findBreakPoint(text string, maxWidth int) int {
-	lastSpace := -1
-	col := 0
-	for i, r := range text {
-		if col >= maxWidth {
-			break
-		}
-		if r == ' ' {
-			lastSpace = col
-			_ = i
-		}
-		col++
+// breakCurrentLine tries to find the last space in currentSpans and splits there.
+// Returns true if a break was made.
+func breakCurrentLine(result *[]WrappedLine, currentSpans *[]htmlconv.StyledSpan, col *int, width int) bool {
+	// Find last space position across all spans
+	type breakPos struct {
+		spanIdx int
+		runeIdx int
 	}
-	if lastSpace > 0 {
-		return lastSpace
-	}
-	return -1
-}
+	var lastBreak *breakPos
 
-func runeLen(s string) int {
-	n := 0
-	for range s {
-		n++
-	}
-	return n
-}
-
-func substringRunes(s string, start, end int) string {
-	runes := []rune(s)
-	if start > len(runes) {
-		start = len(runes)
-	}
-	if end > len(runes) {
-		end = len(runes)
-	}
-	return string(runes[start:end])
-}
-
-func trimLeadingSpace(s string) string {
-	for i, r := range s {
-		if r != ' ' {
-			return s[i:]
+	for si, sp := range *currentSpans {
+		for ri, r := range []rune(sp.Text) {
+			if r == ' ' {
+				lastBreak = &breakPos{spanIdx: si, runeIdx: ri}
+			}
 		}
 	}
-	return ""
+
+	if lastBreak == nil {
+		return false
+	}
+
+	// Split at the break point: everything before space goes to current line
+	var beforeSpans []htmlconv.StyledSpan
+	var afterSpans []htmlconv.StyledSpan
+
+	spans := *currentSpans
+	for si, sp := range spans {
+		if si < lastBreak.spanIdx {
+			beforeSpans = append(beforeSpans, sp)
+		} else if si == lastBreak.spanIdx {
+			runes := []rune(sp.Text)
+			if lastBreak.runeIdx > 0 {
+				beforeSpans = append(beforeSpans, htmlconv.StyledSpan{
+					Text:  string(runes[:lastBreak.runeIdx]),
+					Style: sp.Style,
+				})
+			}
+			// Skip the space itself, take rest as after
+			rest := lastBreak.runeIdx + 1
+			if rest < len(runes) {
+				afterSpans = append(afterSpans, htmlconv.StyledSpan{
+					Text:  string(runes[rest:]),
+					Style: sp.Style,
+				})
+			}
+		} else {
+			afterSpans = append(afterSpans, sp)
+		}
+	}
+
+	*result = append(*result, WrappedLine{Spans: beforeSpans})
+	*currentSpans = afterSpans
+	*col = displayWidth(afterSpans)
+	return true
+}
+
+func appendRune(spans []htmlconv.StyledSpan, r rune, style htmlconv.TextStyle) []htmlconv.StyledSpan {
+	if len(spans) > 0 && spans[len(spans)-1].Style == style {
+		spans[len(spans)-1].Text += string(r)
+	} else {
+		spans = append(spans, htmlconv.StyledSpan{
+			Text:  string(r),
+			Style: style,
+		})
+	}
+	return spans
+}
+
+func displayWidth(spans []htmlconv.StyledSpan) int {
+	w := 0
+	for _, sp := range spans {
+		w += runewidth.StringWidth(sp.Text)
+	}
+	return w
 }

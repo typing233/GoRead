@@ -3,6 +3,8 @@ package paginator
 import (
 	"testing"
 
+	"github.com/mattn/go-runewidth"
+
 	"github.com/goread/goread/internal/htmlconv"
 )
 
@@ -16,6 +18,62 @@ func TestWrapLine(t *testing.T) {
 	wrapped := wrapLine(line, 20)
 	if len(wrapped) < 2 {
 		t.Errorf("expected multiple wrapped lines, got %d", len(wrapped))
+	}
+
+	// Verify no wrapped line exceeds width
+	for i, wl := range wrapped {
+		w := 0
+		for _, sp := range wl.Spans {
+			w += runewidth.StringWidth(sp.Text)
+		}
+		if w > 20 {
+			t.Errorf("wrapped line %d has display width %d, exceeds limit 20", i, w)
+		}
+	}
+}
+
+func TestWrapCJK(t *testing.T) {
+	// Each CJK char is 2 columns wide. "你好世界" = 8 columns
+	line := htmlconv.StyledLine{
+		Spans: []htmlconv.StyledSpan{
+			{Text: "你好世界测试文本换行", Style: htmlconv.TextStyle{}},
+		},
+	}
+
+	// Width 10 = can fit 5 CJK chars per line. "你好世界测试文本换行" = 10 chars, 20 cols → 2 lines
+	wrapped := wrapLine(line, 10)
+	if len(wrapped) < 2 {
+		t.Errorf("expected CJK text to wrap, got %d lines", len(wrapped))
+	}
+
+	for i, wl := range wrapped {
+		w := 0
+		for _, sp := range wl.Spans {
+			w += runewidth.StringWidth(sp.Text)
+		}
+		if w > 10 {
+			t.Errorf("CJK wrapped line %d has display width %d, exceeds limit 10", i, w)
+		}
+	}
+}
+
+func TestWrapMixed(t *testing.T) {
+	// Mix of ASCII and CJK: "Hello你好World" = 5 + 4 + 5 = 14 cols
+	line := htmlconv.StyledLine{
+		Spans: []htmlconv.StyledSpan{
+			{Text: "Hello你好World", Style: htmlconv.TextStyle{}},
+		},
+	}
+
+	wrapped := wrapLine(line, 10)
+	for i, wl := range wrapped {
+		w := 0
+		for _, sp := range wl.Spans {
+			w += runewidth.StringWidth(sp.Text)
+		}
+		if w > 10 {
+			t.Errorf("mixed wrapped line %d has display width %d, exceeds limit 10", i, w)
+		}
 	}
 }
 

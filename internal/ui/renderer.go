@@ -6,6 +6,8 @@ import (
 	"strings"
 
 	"github.com/gdamore/tcell/v2"
+	"github.com/mattn/go-runewidth"
+
 	"github.com/goread/goread/internal/config"
 	"github.com/goread/goread/internal/htmlconv"
 	"github.com/goread/goread/internal/paginator"
@@ -66,11 +68,12 @@ func (r *Renderer) RenderPage(lines []paginator.WrappedLine, offset, totalLines 
 		for _, span := range line.Spans {
 			style := r.applySpanStyle(span.Style)
 			for _, ch := range span.Text {
-				if col >= width-margin {
+				rw := runewidth.RuneWidth(ch)
+				if col+rw > width-margin {
 					break
 				}
 				r.screen.SetContent(col, i, ch, nil, style)
-				col++
+				col += rw
 			}
 		}
 	}

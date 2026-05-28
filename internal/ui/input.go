@@ -1,8 +1,6 @@
 package ui
 
 import (
-	"time"
-
 	"github.com/gdamore/tcell/v2"
 )
 
@@ -31,45 +29,24 @@ const (
 )
 
 type InputHandler struct {
-	state   inputState
-	timer   *time.Timer
-	pending chan KeyAction
+	state inputState
 }
 
 func NewInputHandler() *InputHandler {
-	return &InputHandler{
-		state:   stateIdle,
-		pending: make(chan KeyAction, 1),
-	}
+	return &InputHandler{state: stateIdle}
 }
 
 func (ih *InputHandler) Handle(ev *tcell.EventKey) KeyAction {
-	select {
-	case action := <-ih.pending:
-		ih.cancelTimer()
-		if ev.Rune() == 'g' && action == ActionNone {
+	if ih.state == stateGPending {
+		ih.state = stateIdle
+		if ev.Key() == tcell.KeyRune && ev.Rune() == 'g' {
 			return ActionTop
 		}
-		result := ih.processKey(ev)
-		if result != ActionNone {
-			return result
-		}
-		return action
-	default:
+		// Not 'g' — fall through and process as normal key
+		return ih.processKey(ev)
 	}
 
-	switch ih.state {
-	case stateIdle:
-		return ih.processKey(ev)
-	case stateGPending:
-		ih.cancelTimer()
-		ih.state = stateIdle
-		if ev.Rune() == 'g' {
-			return ActionTop
-		}
-		return ih.processKey(ev)
-	}
-	return ActionNone
+	return ih.processKey(ev)
 }
 
 func (ih *InputHandler) processKey(ev *tcell.EventKey) KeyAction {
@@ -96,9 +73,6 @@ func (ih *InputHandler) processKey(ev *tcell.EventKey) KeyAction {
 			return ActionBottom
 		case 'g':
 			ih.state = stateGPending
-			ih.timer = time.AfterFunc(500*time.Millisecond, func() {
-				ih.state = stateIdle
-			})
 			return ActionNone
 		case 'q':
 			return ActionQuit
@@ -119,11 +93,4 @@ func (ih *InputHandler) processKey(ev *tcell.EventKey) KeyAction {
 	}
 
 	return ActionNone
-}
-
-func (ih *InputHandler) cancelTimer() {
-	if ih.timer != nil {
-		ih.timer.Stop()
-		ih.timer = nil
-	}
 }
